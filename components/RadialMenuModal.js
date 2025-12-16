@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
-import { Globe, Eye, List, X } from 'lucide-react-native';
+import { Globe, Eye, List, X, Sparkles } from 'lucide-react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -287,8 +287,8 @@ export const RadialMenuProvider = ({
                                         onPress={handleFocusPress}
                                         activeOpacity={0.7}
                                     >
-                                        <Eye size={24} color="#fff" strokeWidth={1.8} />
-                                        <Text style={styles.buttonLabel}>Focus</Text>
+                                        <Sparkles size={24} color="#fff" strokeWidth={1.8} />
+                                        <Text style={styles.buttonLabel}>Minimal</Text>
                                     </TouchableOpacity>
                                 </Animated.View>
                             </View>

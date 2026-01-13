@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import * as Haptics from 'expo-haptics';
-import { Globe, Eye, List, X, Sparkles } from 'lucide-react-native';
+import { Globe, Eye, List, X, Sparkles, Radio } from 'lucide-react-native';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -40,14 +40,20 @@ export const RadialMenuProvider = ({
     children,
     onCitiesPress,
     onFocusPress,
+    onRadarPress,
+    onSettingsPress,
     hideTrigger = false,
 }) => {
     const [modalVisible, setModalVisible] = useState(false);
+
+    // Double-tap detection for Settings
+    const lastTapRef = useRef(0);
 
     // Animation values
     const fadeAnim = useRef(new Animated.Value(0)).current;
     const button1Anim = useRef(new Animated.Value(0)).current;
     const button2Anim = useRef(new Animated.Value(0)).current;
+    const button3Anim = useRef(new Animated.Value(0)).current;
     const closeRotate = useRef(new Animated.Value(0)).current;
 
     // Animate menu open
@@ -55,6 +61,7 @@ export const RadialMenuProvider = ({
         fadeAnim.setValue(0);
         button1Anim.setValue(0);
         button2Anim.setValue(0);
+        button3Anim.setValue(0);
         closeRotate.setValue(0);
 
         Animated.parallel([
@@ -76,7 +83,7 @@ export const RadialMenuProvider = ({
                 useNativeDriver: true,
             }),
             Animated.sequence([
-                Animated.delay(80),
+                Animated.delay(60),
                 Animated.spring(button2Anim, {
                     toValue: 1,
                     tension: 120,
@@ -84,8 +91,17 @@ export const RadialMenuProvider = ({
                     useNativeDriver: true,
                 }),
             ]),
+            Animated.sequence([
+                Animated.delay(120),
+                Animated.spring(button3Anim, {
+                    toValue: 1,
+                    tension: 120,
+                    friction: 8,
+                    useNativeDriver: true,
+                }),
+            ]),
         ]).start();
-    }, [fadeAnim, button1Anim, button2Anim, closeRotate]);
+    }, [fadeAnim, button1Anim, button2Anim, button3Anim, closeRotate]);
 
     // Animate menu close
     const animateClose = useCallback((callback) => {
@@ -105,18 +121,51 @@ export const RadialMenuProvider = ({
                 duration: 180,
                 useNativeDriver: true,
             }),
+            Animated.timing(button3Anim, {
+                toValue: 0,
+                duration: 180,
+                useNativeDriver: true,
+            }),
         ]).start(() => {
             if (callback) callback();
         });
-    }, [fadeAnim, button1Anim, button2Anim]);
+    }, [fadeAnim, button1Anim, button2Anim, button3Anim]);
 
-    // Open menu
+    // Open menu (single tap)
     const openMenu = useCallback(() => {
         if (Platform.OS !== 'web') {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
         }
         setModalVisible(true);
     }, []);
+
+    // Open Settings (double-tap or long-press)
+    const openSettings = useCallback(() => {
+        if (Platform.OS !== 'web') {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+        }
+        if (onSettingsPress) onSettingsPress();
+    }, [onSettingsPress]);
+
+    // Handle hamburger tap with double-tap detection
+    const handleHamburgerPress = useCallback(() => {
+        const now = Date.now();
+        const DOUBLE_TAP_DELAY = 300;
+
+        if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
+            // Double tap detected -> Settings
+            lastTapRef.current = 0;
+            openSettings();
+        } else {
+            // First tap -> wait for potential second tap, then open menu
+            lastTapRef.current = now;
+            setTimeout(() => {
+                if (lastTapRef.current === now) {
+                    openMenu();
+                }
+            }, DOUBLE_TAP_DELAY);
+        }
+    }, [openMenu, openSettings]);
 
     useEffect(() => {
         if (modalVisible) {
@@ -145,6 +194,16 @@ export const RadialMenuProvider = ({
         });
     }, [animateClose, onFocusPress]);
 
+    const handleRadarPress = useCallback(() => {
+        if (Platform.OS !== 'web') {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+        animateClose(() => {
+            setModalVisible(false);
+            if (onRadarPress) onRadarPress();
+        });
+    }, [animateClose, onRadarPress]);
+
     const handleBackgroundPress = useCallback(() => {
         animateClose(() => {
             setModalVisible(false);
@@ -167,7 +226,9 @@ export const RadialMenuProvider = ({
                 {!hideTrigger && !modalVisible && (
                     <Pressable
                         style={styles.menuTrigger}
-                        onPress={openMenu}
+                        onPress={handleHamburgerPress}
+                        onLongPress={openSettings}
+                        delayLongPress={400}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     >
                         <View style={styles.hamburgerLine} />
@@ -257,7 +318,7 @@ export const RadialMenuProvider = ({
                                     </TouchableOpacity>
                                 </Animated.View>
 
-                                {/* Button 2: Focus - Positioned at ~250° */}
+                                {/* Button 2: Radar - Positioned in the middle */}
                                 <Animated.View
                                     style={[
                                         styles.radialButton,
@@ -269,11 +330,46 @@ export const RadialMenuProvider = ({
                                                 {
                                                     translateX: button2Anim.interpolate({
                                                         inputRange: [0, 1],
-                                                        outputRange: [20, 0],
+                                                        outputRange: [35, 0],
                                                     }),
                                                 },
                                                 {
                                                     translateY: button2Anim.interpolate({
+                                                        inputRange: [0, 1],
+                                                        outputRange: [-35, 0],
+                                                    }),
+                                                },
+                                            ],
+                                        },
+                                    ]}
+                                >
+                                    <TouchableOpacity
+                                        style={styles.radialButtonInner}
+                                        onPress={handleRadarPress}
+                                        activeOpacity={0.7}
+                                    >
+                                        <Radio size={24} color="#fff" strokeWidth={1.8} />
+                                        <Text style={styles.buttonLabel}>Radar</Text>
+                                    </TouchableOpacity>
+                                </Animated.View>
+
+                                {/* Button 3: Focus - Positioned at bottom */}
+                                <Animated.View
+                                    style={[
+                                        styles.radialButton,
+                                        styles.buttonPosition3,
+                                        {
+                                            opacity: button3Anim,
+                                            transform: [
+                                                { scale: button3Anim },
+                                                {
+                                                    translateX: button3Anim.interpolate({
+                                                        inputRange: [0, 1],
+                                                        outputRange: [15, 0],
+                                                    }),
+                                                },
+                                                {
+                                                    translateY: button3Anim.interpolate({
                                                         inputRange: [0, 1],
                                                         outputRange: [-50, 0],
                                                     }),
@@ -334,8 +430,8 @@ const styles = StyleSheet.create({
         position: 'absolute',
         top: 55,
         right: 24,
-        width: 200,
-        height: 200,
+        width: 260,
+        height: 260,
     },
     closeButton: {
         position: 'absolute',
@@ -356,19 +452,19 @@ const styles = StyleSheet.create({
     },
     radialButton: {
         position: 'absolute',
-        width: 64,
-        height: 64,
-        borderRadius: 32,
-        backgroundColor: 'rgba(30, 30, 30, 0.85)',
-        borderWidth: 1,
-        borderColor: 'rgba(255, 255, 255, 0.2)',
+        width: 72,
+        height: 72,
+        borderRadius: 36,
+        backgroundColor: 'rgba(20, 20, 25, 0.95)',
+        borderWidth: 1.5,
+        borderColor: 'rgba(255, 255, 255, 0.15)',
         alignItems: 'center',
         justifyContent: 'center',
         shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.4,
-        shadowRadius: 12,
-        elevation: 10,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.5,
+        shadowRadius: 16,
+        elevation: 12,
     },
     radialButtonInner: {
         width: '100%',
@@ -377,23 +473,28 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     buttonLabel: {
-        color: 'rgba(255, 255, 255, 0.8)',
-        fontSize: 9,
-        fontWeight: '600',
-        marginTop: 2,
+        color: 'rgba(255, 255, 255, 0.9)',
+        fontSize: 10,
+        fontWeight: '700',
+        marginTop: 4,
         textTransform: 'uppercase',
-        letterSpacing: 0.5,
+        letterSpacing: 1,
     },
-    // Button positions - Adjusted for 2 buttons
+    // Button positions - Adjusted for 3 buttons with proper spacing
     buttonPosition1: {
-        // Cities - ~200 degrees (Left-ish)
-        top: 25,
-        right: 85,
+        // Cities - Far left position
+        top: 5,
+        right: 130,
     },
     buttonPosition2: {
-        // Focus - ~250 degrees (Bottom-ish)
-        top: 85,
-        right: 25,
+        // Radar - Middle diagonal position  
+        top: 70,
+        right: 70,
+    },
+    buttonPosition3: {
+        // Focus - Bottom position
+        top: 135,
+        right: 5,
     },
 });
 

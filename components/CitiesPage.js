@@ -1,17 +1,17 @@
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Platform } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Platform, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { ChevronLeft, Sun, Cloud, CloudRain, Plus, Search } from 'lucide-react-native';
 
-const CitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, onAddCity }) => {
+const CitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, onAddCity, onRemoveCity }) => {
     const [searchQuery, setSearchQuery] = useState('');
 
     // Helper to get icon based on condition (mock logic)
     const getWeatherIcon = (condition, size = 24, color = 'black') => {
-        const cond = condition?.toLowerCase() || '';
-        if (cond.includes('rain')) return <CloudRain size={size} color={color} />;
-        if (cond.includes('cloud')) return <Cloud size={size} color={color} />;
+        const cond = condition?.toLowerCase() || 'sunny';
+        if (cond.includes('rain') || cond.includes('storm')) return <CloudRain size={size} color={color} />;
+        if (cond.includes('cloud') || cond.includes('fog')) return <Cloud size={size} color={color} />;
         return <Sun size={size} color={color} />;
     };
 
@@ -69,6 +69,20 @@ const CitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, onAdd
                                     onPress={() => {
                                         setActiveCityIndex(city.originalIndex);
                                         onBack(); // Go back to Focus Page on selection
+                                    }}
+                                    onLongPress={() => {
+                                        if (Platform.OS === 'web') {
+                                            onRemoveCity(city.originalIndex);
+                                            return;
+                                        }
+                                        Alert.alert(
+                                            "Delete City",
+                                            `Are you sure you want to remove ${city.name}?`,
+                                            [
+                                                { text: "Cancel", style: "cancel" },
+                                                { text: "Delete", onPress: () => onRemoveCity(city.originalIndex), style: "destructive" }
+                                            ]
+                                        );
                                     }}
                                 >
                                     <View style={styles.rowLeft}>

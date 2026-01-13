@@ -10,10 +10,12 @@ import {
     Animated,
     Easing,
     TextInput,
+    Alert,
 } from 'react-native';
 
 import { SafeAreaView, SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
+import * as Location from 'expo-location';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -46,6 +48,34 @@ import { RadialMenuProvider } from './components/RadialMenuModal';
 import FocusWeatherPage from './components/FocusWeatherPage';
 import CitiesPage from './components/CitiesPage';
 import HomeCitiesPage from './components/HomeCitiesPage';
+import RadarScreen from './components/RadarScreen';
+import SettingsPage from './components/SettingsPage';
+
+// Services for persistence and API
+import {
+    loadCities,
+    saveCities,
+    loadPreferences,
+    savePreferences,
+    updateLastCityIndex,
+    updatePreference,
+    cacheWeatherData,
+    getCachedWeather,
+    saveLastActiveCity,
+    loadLastActiveCity,
+} from './services/StorageService';
+import {
+    searchCity,
+    getWeather,
+    isApiKeyConfigured,
+} from './services/WeatherService';
+import {
+    initializeNotifications,
+    updateNotificationSettings,
+    sendTestNotification,
+} from './services/NotificationService';
+import { getVideoUrl, getTimePeriod, clearVideoCache } from './services/VideoService';
+
 
 const isWeb = Platform.OS === 'web';
 
@@ -53,16 +83,19 @@ const isWeb = Platform.OS === 'web';
 // WEATHER OVERLAY - Rain Effect
 // ============================================================================
 const WeatherOverlay = ({ condition }) => {
-    if (condition !== 'rainy') return null;
-    return (
-        <View style={[StyleSheet.absoluteFill, { zIndex: 1 }]} pointerEvents="none">
-            <LinearGradient
-                colors={['rgba(59, 130, 246, 0.1)', 'transparent', 'rgba(59, 130, 246, 0.15)']}
-                locations={[0, 0.5, 1]}
-                style={StyleSheet.absoluteFill}
-            />
-        </View>
-    );
+    if (!condition) return null;
+    if (condition.includes('rain') || condition.includes('storm')) {
+        return (
+            <View style={[StyleSheet.absoluteFill, { zIndex: 1 }]} pointerEvents="none">
+                <LinearGradient
+                    colors={['rgba(59, 130, 246, 0.1)', 'transparent', 'rgba(59, 130, 246, 0.15)']}
+                    locations={[0, 0.5, 1]}
+                    style={StyleSheet.absoluteFill}
+                />
+            </View>
+        );
+    }
+    return null;
 };
 
 // ============================================================================
@@ -70,14 +103,17 @@ const WeatherOverlay = ({ condition }) => {
 // ============================================================================
 const AnimatedWeatherIcon = ({ condition, isNight = false, size = 32 }) => {
     const iconColor = 'rgba(255,255,255,0.9)';
-    if (isNight) return <Moon size={size} color={iconColor} />;
-    const icons = {
-        sunny: <Sun size={size} color={iconColor} />,
-        clear: <Sun size={size} color={iconColor} />,
-        rainy: <CloudRain size={size} color={iconColor} />,
-        cloudy: <Cloud size={size} color={iconColor} />,
-    };
-    return icons[condition] || <Sun size={size} color={iconColor} />;
+    const cond = condition?.toLowerCase() || '';
+
+    if (cond.includes('storm')) return <CloudRain size={size} color={iconColor} />;
+    if (cond.includes('rain')) return <CloudRain size={size} color={iconColor} />;
+    if (cond.includes('snow')) return <CloudRain size={size} color={iconColor} />; // Lucide doesn't have Snow? Use CloudRain or check imports. App used CloudRain for snow before.
+    if (cond.includes('fog')) return <Cloud size={size} color={iconColor} />;
+    if (cond.includes('cloud')) return <Cloud size={size} color={iconColor} />;
+
+    // Clear/Sunny
+    if (cond.includes('night') || isNight) return <Moon size={size} color={iconColor} />;
+    return <Sun size={size} color={iconColor} />;
 };
 
 const { height, width } = Dimensions.get('window');
@@ -86,7 +122,9 @@ const { height, width } = Dimensions.get('window');
 // CHAMELEON GRADIENT ENGINE
 // ============================================================================
 const getChameleonGradient = (currentHour, weatherCondition) => {
-    if (weatherCondition === 'rainy') {
+    const cond = weatherCondition?.toLowerCase() || '';
+
+    if (cond.includes('rain') || cond.includes('storm') || cond.includes('snow')) {
         return {
             name: 'stormy',
             gradientColors: ['rgba(0, 0, 0, 0)', 'rgba(30, 41, 59, 0.9)', 'rgba(15, 23, 42, 0.98)'],
@@ -96,7 +134,7 @@ const getChameleonGradient = (currentHour, weatherCondition) => {
         };
     }
 
-    if (weatherCondition === 'cloudy') {
+    if (cond.includes('cloud') || cond.includes('fog')) {
         return {
             name: 'cloudy',
             gradientColors: ['rgba(0, 0, 0, 0)', 'rgba(51, 65, 85, 0.9)', 'rgba(30, 41, 59, 0.98)'],
@@ -160,28 +198,124 @@ const getWeatherTheme = (condition, isNight) => {
 // ============================================================================
 // HELPERS
 // ============================================================================
-const VIDEO_SOURCE = require('./videos/red twilight.mp4');
+// Video URL is now dynamic via VideoService
 
 const calculateVibe = (temp, condition) => {
-    if (condition === 'clear' || condition === 'sunny') {
-        if (temp >= 18 && temp <= 26) return { score: 10, label: 'Perfect Hoodie Weather' };
-        if (temp > 26) return { score: 8, label: 'Beach Day Energy' };
-        return { score: 7, label: 'Crisp & Refreshing' };
+    const cond = (condition || '').toLowerCase();
+    const now = new Date();
+    const hour = now.getHours();
+    const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+
+    // Day names for context
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dayName = dayNames[dayOfWeek];
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    // Time periods
+    const isMorning = hour >= 5 && hour < 12;
+    const isAfternoon = hour >= 12 && hour < 17;
+    const isEvening = hour >= 17 && hour < 21;
+    const isNight = hour >= 21 || hour < 5;
+    const isLateNight = hour >= 0 && hour < 5;
+
+    // Weather categories
+    const isSunny = cond.includes('clear') || cond.includes('sunny');
+    const isCloudy = cond.includes('cloud') || cond.includes('overcast');
+    const isRainy = cond.includes('rain') || cond.includes('drizzle') || cond.includes('shower');
+    const isStormy = cond.includes('storm') || cond.includes('thunder');
+    const isSnowy = cond.includes('snow') || cond.includes('sleet');
+    const isFoggy = cond.includes('fog') || cond.includes('mist') || cond.includes('haze');
+
+    // Temperature vibes
+    const isCold = temp < 10;
+    const isCool = temp >= 10 && temp < 18;
+    const isPerfect = temp >= 18 && temp <= 25;
+    const isWarm = temp > 25 && temp < 32;
+    const isHot = temp >= 32;
+
+    // ========== WEEKEND VIBES ==========
+    if (isWeekend) {
+        if (isSunny && isPerfect) return { score: 10, label: 'Perfect Weekend Energy ✨' };
+        if (isSunny && isWarm && isMorning) return { score: 9, label: 'Brunch Weather 🥂' };
+        if (isSunny && isAfternoon) return { score: 9, label: 'Main Character Saturday ☀️' };
+        if (isRainy && isWeekend) return { score: 7, label: 'Lazy Weekend Rain 🛋️' };
+        if (isSnowy && isWeekend) return { score: 8, label: 'Cozy Weekend Snowday ❄️' };
+        if (isEvening && isWeekend) return { score: 8, label: 'Weekend Night Vibes 🌙' };
     }
-    if (condition === 'rainy') return { score: 4, label: 'Cozy Vibes Only' };
-    if (condition === 'cloudy') return { score: 6, label: 'Moody & Beautiful' };
-    return { score: 5, label: 'Average Day' };
+
+    // ========== MONDAY MOOD ==========
+    if (dayOfWeek === 1) {
+        if (isSunny && isMorning) return { score: 6, label: 'Monday but make it sunny ☀️' };
+        if (isRainy) return { score: 4, label: 'Rainy Monday Grind ☔' };
+        if (isCloudy) return { score: 4, label: 'Moody Monday Clouds ☁️' };
+        if (isEvening) return { score: 5, label: 'Monday almost over 🙌' };
+        if (isMorning) return { score: 4, label: 'New Week Energy 💪' };
+    }
+
+    // ========== FRIDAY VIBES ==========
+    if (dayOfWeek === 5) {
+        if (isSunny) return { score: 9, label: 'Friday Sunshine = Weekend Soon 🎉' };
+        if (isAfternoon) return { score: 8, label: 'Friday Afternoon Energy 💫' };
+        if (isEvening) return { score: 9, label: 'Friday Night Mode 🪩' };
+        if (isRainy) return { score: 6, label: 'Rainy Friday Cozy Night 🌧️' };
+    }
+
+    // ========== MORNING VIBES ==========
+    if (isMorning) {
+        if (isSunny && isPerfect) return { score: 9, label: 'Golden Morning Energy ✨' };
+        if (isSunny && isCold) return { score: 7, label: 'Crisp Morning Fresh 🌅' };
+        if (isCloudy) return { score: 5, label: 'Soft Morning Light ☁️' };
+        if (isRainy) return { score: 4, label: 'Rainy Morning Mood 🌧️' };
+        if (isFoggy) return { score: 6, label: 'Mysterious Morning Fog 🌫️' };
+        if (isSnowy) return { score: 7, label: 'Snow Morning Magic ❄️' };
+    }
+
+    // ========== AFTERNOON VIBES ==========
+    if (isAfternoon) {
+        if (isSunny && isPerfect) return { score: 9, label: 'Peak Afternoon Vibes ☀️' };
+        if (isSunny && isHot) return { score: 6, label: 'Too Hot to Function 🥵' };
+        if (isCloudy) return { score: 5, label: 'Chill Afternoon Mode 🌥️' };
+        if (isRainy) return { score: 5, label: 'Afternoon Rain Nap 💤' };
+        if (isStormy) return { score: 4, label: 'Dramatic Afternoon ⛈️' };
+    }
+
+    // ========== EVENING VIBES ==========
+    if (isEvening) {
+        if (isSunny) return { score: 8, label: 'Golden Hour Magic 🌇' };
+        if (isCloudy && isWarm) return { score: 7, label: 'Warm Evening Stroll 🚶' };
+        if (isRainy) return { score: 6, label: 'Evening Rain Aesthetic 🌃' };
+        if (isCool) return { score: 7, label: 'Hoodie Weather Evening 🧥' };
+    }
+
+    // ========== NIGHT VIBES ==========
+    if (isNight) {
+        if (isSunny) return { score: 7, label: 'Clear Night Sky ✨' };
+        if (isRainy) return { score: 6, label: 'Rainy Night Comfort 🌧️' };
+        if (isStormy) return { score: 5, label: 'Stormy Night Drama ⚡' };
+        if (isLateNight) return { score: 5, label: 'Late Night Quiet 🌙' };
+        if (isSnowy) return { score: 7, label: 'Silent Snow Night ❄️' };
+    }
+
+    // ========== TEMPERATURE FALLBACKS ==========
+    if (isPerfect) return { score: 8, label: 'Perfect Weather Day 👌' };
+    if (isHot) return { score: 5, label: 'Ice Cream Weather 🍦' };
+    if (isCold) return { score: 5, label: 'Bundle Up Szn 🧣' };
+    if (isCool) return { score: 6, label: 'Light Jacket Vibes 🧥' };
+
+    // ========== WEATHER FALLBACKS ==========
+    if (isSunny) return { score: 7, label: 'Sunny Day Energy ☀️' };
+    if (isRainy) return { score: 5, label: 'Rainy Day Mood 🌧️' };
+    if (isCloudy) return { score: 5, label: 'Cloud Watching Day ☁️' };
+    if (isStormy) return { score: 4, label: 'Storm Watch Mode ⛈️' };
+    if (isSnowy) return { score: 6, label: 'Snow Day Vibes ❄️' };
+    if (isFoggy) return { score: 5, label: 'Foggy Aesthetic 🌫️' };
+
+    return { score: 5, label: 'Regular Day Energy 🌤️' };
 };
 
 const WeatherIcon = ({ condition, size = 20, color = 'white', isNight = false }) => {
-    if (isNight) return <Moon size={size} color={color} />;
-    const icons = {
-        sunny: <Sun size={size} color={color} />,
-        clear: <Sun size={size} color={color} />,
-        rainy: <CloudRain size={size} color={color} />,
-        cloudy: <Cloud size={size} color={color} />,
-    };
-    return icons[condition] || <Sun size={size} color={color} />;
+    // Re-use Logic
+    return <AnimatedWeatherIcon condition={condition} isNight={isNight} size={size} />;
 };
 
 const generateHourlyForecast = (baseTemp) => {
@@ -211,6 +345,7 @@ const generateWeeklyForecast = (baseTemp) => {
         condition: conditions[i],
         low: Math.round(baseTemp - 5 + Math.random() * 3),
         high: Math.round(baseTemp + 3 + Math.random() * 5),
+        precipitation: conditions[i] === 'rainy' ? Math.floor(Math.random() * 40) + 60 : Math.floor(Math.random() * 30),
         globalLow,
         globalHigh,
     }));
@@ -285,7 +420,7 @@ const BouncingChevron = () => {
 const FloatingHourlyItem = ({ item }) => (
     <View style={{ alignItems: 'center', marginRight: 28 }}>
         <Text style={{ fontSize: 11, fontWeight: '500', marginBottom: 10, color: item.isCurrent ? 'rgba(255,255,255,1)' : 'rgba(255,255,255,0.4)', letterSpacing: 0.5 }}>{item.time}</Text>
-        <WeatherIcon condition="clear" size={20} color={item.isCurrent ? '#fff' : 'rgba(255,255,255,0.5)'} isNight={item.isNight} />
+        <WeatherIcon condition={item.condition} size={20} color={item.isCurrent ? '#fff' : 'rgba(255,255,255,0.5)'} isNight={item.isNight} />
         <Text style={{ fontSize: 18, fontWeight: '600', marginTop: 10, color: item.isCurrent ? 'rgba(255,255,255,1)' : 'rgba(255,255,255,0.6)' }}>{item.temp}°</Text>
     </View>
 );
@@ -311,9 +446,24 @@ const FloatingDailyRow = ({ item }) => (
     <View style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 18, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(255,255,255,0.06)' }}>
         <Text style={{ color: 'rgba(255,255,255,0.6)', fontSize: 15, width: 56, fontWeight: '500' }}>{item.day}</Text>
         <View style={{ width: 32, alignItems: 'center' }}><WeatherIcon condition={item.condition} size={18} color="rgba(255,255,255,0.5)" /></View>
-        <Text style={{ color: 'rgba(255,255,255,0.35)', fontSize: 14, width: 36, textAlign: 'right' }}>{item.low}°</Text>
+        <View style={{
+            backgroundColor: 'rgba(96, 165, 250, 0.15)',
+            borderRadius: 12,
+            paddingHorizontal: 8,
+            paddingVertical: 3,
+            marginLeft: 8,
+            flexDirection: 'row',
+            alignItems: 'center',
+            borderWidth: 1,
+            borderColor: 'rgba(96, 165, 250, 0.3)'
+        }}>
+            <Droplets size={14} color="rgba(96, 165, 250, 1)" />
+            <Text style={{ color: 'rgba(96, 165, 250, 1)', fontSize: 13, marginLeft: 4, fontWeight: '700' }}>{item.precipitation || 0}%</Text>
+        </View>
+        <View style={{ flex: 1, marginLeft: 8 }} />
+        <Text style={{ color: 'rgba(255,255,255,0.45)', fontSize: 16, width: 40, textAlign: 'right', fontWeight: '500' }}>{item.low}°</Text>
         <TempRangeBar low={item.low} high={item.high} globalLow={item.globalLow} globalHigh={item.globalHigh} />
-        <Text style={{ color: 'rgba(255,255,255,0.9)', fontSize: 14, width: 36, textAlign: 'right', fontWeight: '600' }}>{item.high}°</Text>
+        <Text style={{ color: 'rgba(255,255,255,0.95)', fontSize: 16, width: 40, textAlign: 'right', fontWeight: '700' }}>{item.high}°</Text>
     </View>
 );
 
@@ -323,8 +473,10 @@ const FloatingDailyRow = ({ item }) => (
 const MorphingHeader = ({ city, temp, translateY, chameleonGradient }) => (
     <Animated.View style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 100, transform: [{ translateY }] }}>
         <LinearGradient colors={chameleonGradient.gradientColors} locations={[0, 0.3, 1]} style={{ paddingTop: 50, paddingBottom: 16, paddingHorizontal: 24, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-            <Text style={{ color: 'white', fontSize: 14, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase' }}>{city}</Text>
-            <Text style={{ color: 'white', fontSize: 24, fontWeight: '200' }}>{temp}°</Text>
+            <Text style={{ color: 'white', fontSize: 14, fontWeight: '700', letterSpacing: 2, textTransform: 'uppercase', flex: 1, marginRight: 16 }} numberOfLines={1}>{city}</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={{ color: 'white', fontSize: 24, fontWeight: '200', marginRight: 48 }}>{temp}°</Text>
+            </View>
         </LinearGradient>
     </Animated.View>
 );
@@ -369,15 +521,46 @@ const PullDownIndicator = () => (
 const CityRow = ({ city, index, activeCityIndex, onSelect, onDelete }) => {
     const theme = getChameleonGradient(12, city.condition);
     const isSelected = index === activeCityIndex;
-    const [isHovered, setIsHovered] = useState(false);
 
-    const handlers = Platform.select({
-        web: { onHoverIn: () => setIsHovered(true), onHoverOut: () => setIsHovered(false), onPress: onSelect },
-        default: { onLongPress: () => setIsHovered(true), onPress: () => { if (isHovered) setIsHovered(false); else onSelect(); }, delayLongPress: 300 },
-    });
+    // Determine if it's night time
+    const currentHour = new Date().getHours();
+    const isNight = currentHour >= 19 || currentHour < 6;
+
+    const handleLongPress = () => {
+        if (Platform.OS === 'web') {
+            onDelete(); // Direct delete or custom web modal could be better, but simple for now
+            return;
+        }
+
+        // Using standard Alert for specific deletion confirmation
+        // This must be imported from react-native
+        Alert.alert(
+            "Delete City",
+            `Are you sure you want to remove ${city.name}?`,
+            [
+                { text: "Cancel", style: "cancel" },
+                { text: "Delete", onPress: onDelete, style: "destructive" }
+            ],
+            { cancelable: true }
+        );
+    };
 
     return (
-        <Pressable {...handlers} style={({ pressed }) => ({ width: '100%', height: 100, marginBottom: 12, borderRadius: 24, overflow: 'hidden', borderWidth: 1, borderColor: isSelected ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.1)', backgroundColor: pressed ? 'rgba(255,255,255,0.1)' : 'transparent' })}>
+        <Pressable
+            onPress={onSelect}
+            onLongPress={handleLongPress}
+            delayLongPress={500}
+            style={({ pressed }) => ({
+                width: '100%',
+                height: 100,
+                marginBottom: 12,
+                borderRadius: 24,
+                overflow: 'hidden',
+                borderWidth: 1,
+                borderColor: isSelected ? 'rgba(255,255,255,0.5)' : 'rgba(255,255,255,0.1)',
+                backgroundColor: pressed ? 'rgba(255,255,255,0.1)' : 'transparent'
+            })}
+        >
             <LinearGradient colors={theme.gradientColors} style={StyleSheet.absoluteFill} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
             <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', padding: 20 }}>
                 <View style={{ flex: 1 }}>
@@ -385,17 +568,8 @@ const CityRow = ({ city, index, activeCityIndex, onSelect, onDelete }) => {
                     <Text style={{ color: 'rgba(255,255,255,0.7)', fontSize: 14, marginTop: 4, textTransform: 'capitalize' }}>{city.condition}</Text>
                 </View>
                 <View style={{ alignItems: 'flex-end', justifyContent: 'center', minWidth: 80 }}>
-                    {isHovered ? (
-                        <Pressable onPress={(e) => { e.stopPropagation(); onDelete(); }} style={{ backgroundColor: '#ef4444', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 12, flexDirection: 'row', alignItems: 'center' }}>
-                            <Trash2 size={20} color="white" />
-                            <Text style={{ color: 'white', fontWeight: '600', marginLeft: 6 }}>Delete</Text>
-                        </Pressable>
-                    ) : (
-                        <>
-                            <Text style={{ color: 'white', fontSize: 32, fontWeight: '200' }}>{city.temp}°</Text>
-                            <AnimatedWeatherIcon condition={city.condition} size={24} />
-                        </>
-                    )}
+                    <Text style={{ color: 'white', fontSize: 32, fontWeight: '200' }}>{city.temp || 0}°</Text>
+                    <AnimatedWeatherIcon condition={city.condition} isNight={isNight} size={24} />
                 </View>
             </View>
         </Pressable>
@@ -403,17 +577,59 @@ const CityRow = ({ city, index, activeCityIndex, onSelect, onDelete }) => {
 };
 
 // ============================================================================
-// GLASS DRAWER
+// GLASS DRAWER - With real city search
 // ============================================================================
-const GlassDrawer = ({ cities, activeCityIndex, onSelectCity, onAddCity, onRemoveCity, onClose }) => {
+const GlassDrawer = ({ cities, activeCityIndex, onSelectCity, onAddCity, onRemoveCity, onClose, preferences, onUpdatePreference }) => {
     const [searchText, setSearchText] = useState('');
-    const mockResults = [
-        { name: 'Paris', temp: 12, condition: 'rainy' },
-        { name: 'Tokyo', temp: 19, condition: 'cloudy' },
-        { name: 'Dubai', temp: 35, condition: 'sunny' },
-        { name: 'Sydney', temp: 22, condition: 'sunny' },
-    ].filter(c => c.name.toLowerCase().includes(searchText.toLowerCase()));
+    const [searchResults, setSearchResults] = useState([]);
+    const [isLoading, setIsLoading] = useState(false);
+    const searchTimeout = useRef(null);
+
+
+
+    // Debounced city search
+    useEffect(() => {
+        if (searchText.length < 2) {
+            setSearchResults([]);
+            return;
+        }
+
+        // Clear previous timeout
+        if (searchTimeout.current) {
+            clearTimeout(searchTimeout.current);
+        }
+
+        // Debounce search (300ms)
+        searchTimeout.current = setTimeout(async () => {
+            setIsLoading(true);
+            try {
+                // New API: searchCity(name) returns array
+                const results = await searchCity(searchText);
+                // Limit manually if needed, or service already limited it
+                setSearchResults(results);
+            } catch (error) {
+                console.error('Search error:', error);
+                setSearchResults([]);
+            } finally {
+                setIsLoading(false);
+            }
+        }, 300);
+
+        return () => {
+            if (searchTimeout.current) {
+                clearTimeout(searchTimeout.current);
+            }
+        };
+    }, [searchText]);
+
     const isSearching = searchText.length > 0;
+
+    const handleAddCity = (city) => {
+        // Pass the full city object with lat/lon
+        onAddCity(city);
+        setSearchText('');
+        setSearchResults([]);
+    };
 
     return (
         <View style={[StyleSheet.absoluteFill, { zIndex: 50 }]}>
@@ -424,25 +640,72 @@ const GlassDrawer = ({ cities, activeCityIndex, onSelectCity, onAddCity, onRemov
                     <Text style={{ color: 'white', fontSize: 28, fontWeight: '200' }}>{isSearching ? 'Add City' : 'My Cities'}</Text>
                     <Pressable onPress={onClose} style={{ padding: 8 }}><X size={24} color="white" /></Pressable>
                 </View>
+
+                {/* Search Bar */}
                 <View style={{ paddingHorizontal: 24, marginBottom: 24 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)', borderRadius: 20, paddingHorizontal: 16, paddingVertical: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.15)' }}>
                         <Search size={18} color="rgba(255,255,255,0.5)" />
-                        <TextInput style={{ flex: 1, marginLeft: 12, fontSize: 16, color: 'white' }} placeholder="Search for a city..." placeholderTextColor="rgba(255,255,255,0.4)" value={searchText} onChangeText={setSearchText} />
+                        <TextInput
+                            style={{ flex: 1, marginLeft: 12, fontSize: 16, color: 'white' }}
+                            placeholder="Search for a city..."
+                            placeholderTextColor="rgba(255,255,255,0.4)"
+                            value={searchText}
+                            onChangeText={setSearchText}
+                            autoCorrect={false}
+                            autoCapitalize="words"
+                        />
+                        {isLoading && (
+                            <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 12 }}>...</Text>
+                        )}
                     </View>
                 </View>
+
+
+
                 <ScrollView style={{ flex: 1 }}>
                     {isSearching ? (
                         <View style={{ paddingHorizontal: 24 }}>
-                            {mockResults.map((city, index) => (
-                                <Pressable key={index} onPress={() => { onAddCity(city.name); setSearchText(''); }} style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 20, marginBottom: 12, backgroundColor: pressed ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)', borderRadius: 24, borderWidth: 1, borderColor: 'rgba(255,255,255,0.1)' })}>
-                                    <View><Text style={{ color: 'white', fontSize: 18, fontWeight: '600' }}>{city.name}</Text><Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 14 }}>{city.condition}</Text></View>
+                            {searchResults.length === 0 && !isLoading && searchText.length >= 2 && (
+                                <Text style={{ color: 'rgba(255,255,255,0.5)', textAlign: 'center', marginTop: 20 }}>
+                                    No cities found
+                                </Text>
+                            )}
+                            {searchResults.map((city, index) => (
+                                <Pressable
+                                    key={city.id || index}
+                                    onPress={() => handleAddCity(city)}
+                                    style={({ pressed }) => ({
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        justifyContent: 'space-between',
+                                        padding: 20,
+                                        marginBottom: 12,
+                                        backgroundColor: pressed ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.05)',
+                                        borderRadius: 24,
+                                        borderWidth: 1,
+                                        borderColor: 'rgba(255,255,255,0.1)'
+                                    })}
+                                >
+                                    <View>
+                                        <Text style={{ color: 'white', fontSize: 18, fontWeight: '600' }}>{city.name}</Text>
+                                        <Text style={{ color: 'rgba(255,255,255,0.5)', fontSize: 14 }}>{city.displayName || city.country}</Text>
+                                    </View>
                                     <Plus size={24} color="white" />
                                 </Pressable>
                             ))}
                         </View>
                     ) : (
                         <View style={{ paddingHorizontal: 24 }}>
-                            {cities.map((city, index) => (<CityRow key={index} city={city} index={index} activeCityIndex={activeCityIndex} onSelect={() => onSelectCity(index)} onDelete={() => onRemoveCity(index)} />))}
+                            {cities.map((city, index) => (
+                                <CityRow
+                                    key={city.id || index}
+                                    city={city}
+                                    index={index}
+                                    activeCityIndex={activeCityIndex}
+                                    onSelect={() => onSelectCity(index)}
+                                    onDelete={() => onRemoveCity(index)}
+                                />
+                            ))}
                         </View>
                     )}
                 </ScrollView>
@@ -455,36 +718,70 @@ const GlassDrawer = ({ cities, activeCityIndex, onSelectCity, onAddCity, onRemov
 // CITY WEATHER PAGE
 // ============================================================================
 const CityWeatherPage = ({ city, isActive, onOpenDrawer, videoPlayer }) => {
-    const currentHour = new Date().getHours();
+    // Calculate current hour in the city's timezone
+    const getCityCurrentHour = () => {
+        const now = new Date();
+        if (city.timezone) {
+            try {
+                const cityTime = now.toLocaleTimeString('en-US', {
+                    timeZone: city.timezone,
+                    hour: 'numeric',
+                    hour12: false
+                });
+                return parseInt(cityTime, 10);
+            } catch (e) {
+                console.log('Timezone error:', e);
+            }
+        }
+        return now.getHours();
+    };
+    const currentHour = getCityCurrentHour();
     const isNight = currentHour >= 19 || currentHour < 6;
     const isIOS = Platform.OS !== 'android';
 
+    // Use real data from city object, with fallbacks
     const weather = {
         temp: city.temp,
-        condition: city.condition,
+        condition: city.condition || 'sunny',
         city: city.name,
-        humidity: 58,
-        wind: 14,
-        uv: 3,
-        sunrise: '06:42',
-        sunset: '18:15',
-        feelsLike: city.temp + 2,
+        humidity: city.humidity || 50,
+        wind: city.wind || 10,
+        uv: city.uv || 0,
+        sunrise: city.sunrise || '06:00',
+        sunset: city.sunset || '18:00',
+        feelsLike: city.feelsLike || city.temp,
     };
 
     const theme = useMemo(() => getWeatherTheme(weather.condition, isNight), [weather.condition, isNight]);
     const chameleonGradient = useMemo(() => getChameleonGradient(currentHour, weather.condition), [currentHour, weather.condition]);
     const vibe = useMemo(() => calculateVibe(weather.temp, weather.condition), [weather.temp, weather.condition]);
-    const hourly = useMemo(() => generateHourlyForecast(weather.temp), [weather.temp]);
-    const weekly = useMemo(() => generateWeeklyForecast(weather.temp), [weather.temp]);
 
-    // Date String
-    const date = new Date();
-    const dateString = date.toLocaleDateString('en-US', { weekday: 'long' });
-    const timeString = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const fullDate = `${dateString}, ${timeString}`;
+    // Use real hourly/daily data if available, otherwise generate mock
+    const hourly = useMemo(() => city.hourly || generateHourlyForecast(weather.temp), [city.hourly, weather.temp]);
+    const weekly = useMemo(() => city.daily || generateWeeklyForecast(weather.temp), [city.daily, weather.temp]);
 
-    const todayHigh = weekly[0].high;
-    const todayLow = weekly[0].low;
+    // Date String - Use city's timezone if available
+    const getCityLocalTime = () => {
+        const now = new Date();
+        if (city.timezone) {
+            // Use the city's timezone to get correct local time
+            try {
+                const options = { timeZone: city.timezone, weekday: 'long', hour: '2-digit', minute: '2-digit' };
+                return now.toLocaleDateString('en-US', { timeZone: city.timezone, weekday: 'long' }) + ', ' +
+                    now.toLocaleTimeString('en-US', { timeZone: city.timezone, hour: '2-digit', minute: '2-digit' });
+            } catch (e) {
+                console.log('Timezone error:', e);
+            }
+        }
+        // Fallback to device time
+        return now.toLocaleDateString('en-US', { weekday: 'long' }) + ', ' +
+            now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    };
+    const fullDate = getCityLocalTime();
+
+    // Safe Check for weekly data
+    const todayHigh = weekly[0]?.high || weather.temp + 5;
+    const todayLow = weekly[0]?.low || weather.temp - 5;
 
     // Fade animation for city transitions
     const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -539,7 +836,7 @@ const CityWeatherPage = ({ city, isActive, onOpenDrawer, videoPlayer }) => {
                         <Animated.View style={{ paddingTop: 60, opacity: isIOS ? 1 : cityOpacity }}>
                             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                                 <MapPin size={18} color="white" style={{ marginRight: 8 }} />
-                                <Text style={{ color: 'white', fontSize: 20, fontWeight: '500', letterSpacing: 0.5 }}>{weather.city}, UK</Text>
+                                <Text style={{ color: 'white', fontSize: 20, fontWeight: '500', letterSpacing: 0.5 }}>{weather.city}, {city.country || ''}</Text>
                             </View>
                             <Text style={{ color: 'rgba(255,255,255,0.8)', fontSize: 15, marginTop: 8, fontWeight: '400' }}>{fullDate}</Text>
                         </Animated.View>
@@ -575,7 +872,7 @@ const CityWeatherPage = ({ city, isActive, onOpenDrawer, videoPlayer }) => {
 
                             {/* Condition Right */}
                             <Animated.View style={{ alignItems: 'center', opacity: isIOS ? 1 : tempOpacity, paddingRight: 10 }}>
-                                <AnimatedWeatherIcon condition={weather.condition} size={32} />
+                                <AnimatedWeatherIcon condition={weather.condition} isNight={isNight} size={32} />
                                 <Text style={{ color: 'white', fontSize: 13, marginTop: 6, fontWeight: '500' }}>{weather.condition.charAt(0).toUpperCase() + weather.condition.slice(1)}</Text>
                             </Animated.View>
                         </View>
@@ -654,36 +951,346 @@ export default function App() {
 }
 
 function WeatherApp() {
-    const [cities, setCities] = useState([
-        { name: 'Casablanca', temp: 22, condition: 'rainy' },
-        { name: 'New York', temp: 18, condition: 'cloudy' },
-        { name: 'Tokyo', temp: 26, condition: 'sunny' },
-        { name: 'London', temp: 14, condition: 'rainy' },
-    ]);
+    // State
+    const [cities, setCities] = useState([]);
     const [activeCityIndex, setActiveCityIndex] = useState(0);
     const [isDrawerOpen, setIsDrawerOpen] = useState(false);
-    const [viewMode, setViewMode] = useState('pager'); // 'pager' | 'focus'
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [viewMode, setViewMode] = useState('pager'); // 'pager' | 'focus' | 'cities' | 'home-cities' | 'radar'
+    const [isLoading, setIsLoading] = useState(true);
+    const [preferences, setPreferences] = useState(null);
+    const [notificationPrefs, setNotificationPrefs] = useState({ enabled: true, hour: 8, minute: 0 });
+    const [notificationCityIndex, setNotificationCityIndex] = useState(0);
     const pagerRef = useRef(null);
 
-    // SINGLE SHARED VIDEO PLAYER - Only one instance for all cities (performance optimization)
-    const videoPlayer = useVideoPlayer(VIDEO_SOURCE, (p) => {
-        p.loop = true;
-        p.muted = true;
-        p.playbackRate = 0.6;
-        p.play();
+    // ============================================================================
+    // LOAD SAVED DATA ON APP LAUNCH
+    // ============================================================================
+    // ... (existing imports)
+
+    // ============================================================================
+    // LOAD SAVED DATA ON APP LAUNCH
+    // ============================================================================
+    useEffect(() => {
+        const initializeApp = async () => {
+            try {
+                console.log('[App] Initializing...');
+
+                // Load saved cities
+                const savedCities = await loadCities();
+
+                if (savedCities && savedCities.length > 0) {
+                    // Update weather for all saved cities to ensure new fields (high/low/precip) are present
+                    const updatedCities = await Promise.all(savedCities.map(async (city) => {
+                        try {
+                            const weather = await getWeather(city.lat, city.lon);
+                            if (weather) {
+                                return {
+                                    ...city,
+                                    temp: weather.current.temp,
+                                    condition: weather.current.condition,
+                                    video: weather.current.video,
+                                    hourly: weather.hourly,
+                                    daily: weather.daily,
+                                    timezone: weather.timezone,
+                                    utcOffsetSeconds: weather.utcOffsetSeconds,
+                                    ...weather.current,
+                                };
+                            }
+                            return city;
+                        } catch (e) {
+                            console.log(`[App] Failed to refresh weather for ${city.name}`, e);
+                            return city;
+                        }
+                    }));
+
+                    setCities(updatedCities);
+                    console.log('[App] Loaded and refreshed', updatedCities.length, 'cities');
+                } else {
+                    console.log('[App] No saved cities, attempting to fetch user location...');
+
+                    // Request permissions
+                    const { status } = await Location.requestForegroundPermissionsAsync();
+
+                    if (status !== 'granted') {
+                        console.log('[App] Location permission denied, using defaults');
+                        throw new Error('Location permission denied');
+                    }
+
+                    const location = await Location.getCurrentPositionAsync({});
+                    const { latitude, longitude } = location.coords;
+
+                    // Reverse geocode to get city name
+                    const reverseGeocoded = await Location.reverseGeocodeAsync({ latitude, longitude });
+                    const cityData = reverseGeocoded[0];
+                    const cityName = cityData.city || cityData.name;
+
+                    // Fetch weather for this location
+                    const weather = await getWeather(latitude, longitude);
+
+                    const initialCity = {
+                        id: Date.now().toString(),
+                        name: cityName,
+                        country: cityData.isoCountryCode,
+                        lat: latitude,
+                        lon: longitude,
+                        temp: weather ? weather.current.temp : 20,
+                        condition: weather ? weather.current.condition : 'sunny',
+
+                        // Spread full weather data
+                        ...(weather ? {
+                            video: weather.current.video,
+                            hourly: weather.hourly,
+                            daily: weather.daily,
+                            timezone: weather.timezone,
+                            utcOffsetSeconds: weather.utcOffsetSeconds,
+                            ...weather.current
+                        } : {})
+                    };
+
+                    setCities([initialCity]);
+                    console.log('[App] Used user location:', cityName);
+                }
+
+                // Load user preferences
+                const savedPrefs = await loadPreferences();
+                setPreferences(savedPrefs);
+
+                // Set view mode based on saved preference
+                const initialViewMode = savedPrefs.viewMode === 'minimal' ? 'focus' : 'pager';
+                setViewMode(initialViewMode);
+
+                // Set last selected city based on mode
+                const lastCityIndex = savedPrefs.lastCityIndex?.[savedPrefs.viewMode === 'minimal' ? 'minimal' : 'full'] || 0;
+                const validIndex = Math.min(lastCityIndex, (savedCities?.length || 1) - 1);
+                setActiveCityIndex(Math.max(0, validIndex));
+
+                console.log('[App] Preferences loaded:', savedPrefs);
+                console.log('[App] Starting in', initialViewMode, 'mode');
+
+                // Initialize notifications
+                try {
+                    const notifPrefs = await initializeNotifications(savedCities?.[0] || null);
+                    setNotificationPrefs(notifPrefs);
+                    console.log('[App] Notifications initialized:', notifPrefs);
+                } catch (notifError) {
+                    console.log('[App] Notification init skipped:', notifError.message);
+                }
+
+
+
+            } catch (error) {
+                console.error('[App] Initialization error/fallback:', error);
+
+                // No fallback cities - if location fails and no saved cities, start with empty list
+                if (cities.length === 0) {
+                    console.log('[App] No cities available, user needs to add manually');
+                }
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        initializeApp();
+    }, []);
+
+    // ============================================================================
+    // PERSIST CITIES WHEN CHANGED
+    // ============================================================================
+    useEffect(() => {
+        if (!isLoading && cities.length > 0) {
+            saveCities(cities);
+        }
+    }, [cities, isLoading]);
+
+    // ============================================================================
+    // PERSIST VIEW MODE PREFERENCE
+    // ============================================================================
+    useEffect(() => {
+        if (!isLoading && preferences) {
+            const newViewModePreference = viewMode === 'focus' ? 'minimal' : 'full';
+            if (preferences.viewMode !== newViewModePreference) {
+                const updatedPrefs = { ...preferences, viewMode: newViewModePreference };
+                setPreferences(updatedPrefs);
+                savePreferences(updatedPrefs);
+            }
+        }
+    }, [viewMode, isLoading]);
+
+    // ============================================================================
+    // SAVE LAST ACTIVE CITY FOR NOTIFICATIONS
+    // ============================================================================
+    useEffect(() => {
+        if (!isLoading && cities.length > 0 && cities[activeCityIndex]) {
+            const currentCity = cities[activeCityIndex];
+            saveLastActiveCity(currentCity);
+            console.log('[App] Last active city saved for notifications:', currentCity.name);
+        }
+    }, [activeCityIndex, cities, isLoading]);
+
+    // ============================================================================
+    // PERSIST LAST SELECTED CITY
+    // ============================================================================
+    useEffect(() => {
+        if (!isLoading && preferences) {
+            const mode = viewMode === 'focus' ? 'minimal' : 'full';
+            updateLastCityIndex(mode, activeCityIndex);
+        }
+    }, [activeCityIndex, viewMode, isLoading]);
+
+    // Dynamic video URL based on current weather and time
+    const currentCity = cities[activeCityIndex];
+    const currentCondition = currentCity?.condition || 'clear';
+
+    // Track the last video URL to prevent unnecessary player recreation
+    const lastVideoUrlRef = useRef(null);
+
+    // Get stable video URL - memoize to prevent random URL selection on every render
+    const videoUrl = useMemo(() => {
+        // Only compute new URL if condition actually changed
+        const url = getVideoUrl(currentCondition);
+        console.log('[App] Video URL computed for', currentCondition, '->', url?.split('/').pop());
+        return url;
+    }, [currentCondition]);
+
+    // Track if we should skip playing (during transitions)
+    const isTransitioningRef = useRef(false);
+
+    // SINGLE SHARED VIDEO PLAYER - Using Cloudinary URL with error handling
+    // The callback is called when player is initialized
+    const videoPlayer = useVideoPlayer(videoUrl, (player) => {
+        try {
+            player.loop = true;
+            player.muted = true;
+            player.playbackRate = 0.6;
+
+            // Don't auto-play in callback - we'll do it in useEffect to handle transitions properly
+        } catch (error) {
+            console.log('[VideoPlayer] Config error:', error.message);
+        }
     });
 
+    // Safely play video when player or URL changes
+    useEffect(() => {
+        if (!videoPlayer) return;
+
+        // Mark that we're done transitioning
+        isTransitioningRef.current = false;
+        lastVideoUrlRef.current = videoUrl;
+
+        // Delay play to ensure player is fully ready
+        const playTimer = setTimeout(() => {
+            if (!isTransitioningRef.current) {
+                try {
+                    videoPlayer.play();
+                } catch (error) {
+                    // Gracefully handle "shared object released" errors
+                    console.log('[VideoPlayer] Play skipped (player may be released)');
+                }
+            }
+        }, 200);
+
+        return () => {
+            // Mark transition when this effect unmounts (URL changing)
+            isTransitioningRef.current = true;
+            clearTimeout(playTimer);
+        };
+    }, [videoPlayer, videoUrl]);
+
+    // ============================================================================
+    // HANDLERS
+    // ============================================================================
     const handleSelectCity = (index) => {
         setActiveCityIndex(index);
         if (!isWeb) pagerRef.current?.setPage(index);
         setIsDrawerOpen(false);
     };
 
-    const handleAddCity = (cityName) => {
-        const conditions = ['sunny', 'cloudy', 'rainy', 'clear'];
-        const newCity = { name: cityName, temp: Math.floor(Math.random() * 20) + 10, condition: conditions[Math.floor(Math.random() * conditions.length)] };
-        setCities([...cities, newCity]);
-    };
+    const handleAddCity = useCallback(async (cityData) => {
+        // cityData can be a string (legacy) or object with lat/lon from search
+        let newCity;
+        if (typeof cityData === 'string') {
+            // Legacy: just city name - try to search it first
+            const results = await searchCity(cityData);
+            if (results && results.length > 0) {
+                const city = results[0];
+                newCity = {
+                    id: city.id.toString(),
+                    name: city.name,
+                    country: city.country,
+                    lat: city.lat,
+                    lon: city.lon,
+                };
+            } else {
+                return; // Can't add if not found
+            }
+        } else {
+            // New: full city object from search
+            newCity = {
+                id: cityData.id || Date.now().toString(),
+                name: cityData.name,
+                country: cityData.country,
+                lat: cityData.lat,
+                lon: cityData.lon,
+            };
+        }
+
+        // Check if city already exists
+        const exists = cities.some(c =>
+            c.name.toLowerCase() === newCity.name.toLowerCase() &&
+            c.country === newCity.country
+        );
+
+        if (!exists) {
+            // Fetch weather before adding
+            try {
+                const weather = await getWeather(newCity.lat, newCity.lon);
+                if (weather) {
+                    newCity = {
+                        ...newCity,
+                        temp: weather.current.temp,
+                        condition: weather.current.condition,
+                        hourly: weather.hourly,
+                        daily: weather.daily,
+                        timezone: weather.timezone,
+                        utcOffsetSeconds: weather.utcOffsetSeconds,
+                        ...weather.current,
+                    };
+                }
+            } catch (e) {
+                console.error('Failed to fetch initial weather for new city', e);
+                newCity.temp = 0;
+                newCity.condition = 'cloudy';
+            }
+
+            setCities(prev => {
+                const newCities = [...prev, newCity];
+                // Switch to the new city immediately
+                const newIndex = newCities.length - 1;
+
+                // Use setTimeout to allow render cycle to complete before scrolling
+                setTimeout(() => {
+                    setActiveCityIndex(newIndex);
+                    // if (!isWeb) pagerRef.current?.setPage(newIndex); 
+                    // Note: setPage might be async or ref not ready, but usually works. 
+                    // Use a slightly safer check or just trigger state update.
+                }, 100);
+
+                return newCities;
+            });
+
+            // Close drawer and reset view mode if needed
+            setIsDrawerOpen(false);
+            if (viewMode === 'cities' || viewMode === 'home-cities') {
+                setViewMode('pager'); // Go back to main view to see the new city
+            }
+
+            console.log('[App] Added city:', newCity.name);
+        } else {
+            console.log('[App] City already exists:', newCity.name);
+            Alert.alert('City exists', `${newCity.name} is already in your list.`);
+        }
+    }, [cities, viewMode]);
 
     const handleRemoveCity = (index) => {
         if (cities.length <= 1) return;
@@ -719,7 +1326,6 @@ function WeatherApp() {
     const handleCitiesPress = useCallback(() => {
         console.log('CITIES selected - opening premium cities page');
         setViewMode('home-cities');
-        // Close drawer if open (though we are navigating away)
         setIsDrawerOpen(false);
     }, []);
 
@@ -740,11 +1346,44 @@ function WeatherApp() {
         setViewMode('focus');
     }, []);
 
+    const handleRadarPress = useCallback(() => {
+        console.log('RADAR selected - opening weather radar');
+        setViewMode('radar');
+    }, []);
+
+    const handleSettingsPress = useCallback(() => {
+        console.log('SETTINGS opened via double-tap/long-press');
+        setIsSettingsOpen(true);
+    }, []);
+
+    // Handle notification settings change from SettingsPage
+    const handleNotificationChange = useCallback(async (enabled, hour, minute) => {
+        console.log('Notification settings changed:', { enabled, hour, minute });
+        setNotificationPrefs({ enabled, hour, minute });
+
+        // Get current city data for notification content
+        const currentCity = cities[activeCityIndex];
+        await updateNotificationSettings(enabled, hour, minute, currentCity);
+    }, [cities, activeCityIndex]);
+
+    // ============================================================================
+    // LOADING SCREEN
+    // ============================================================================
+    if (isLoading) {
+        return (
+            <View style={{ flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }}>
+                <Text style={{ color: 'white', fontSize: 24, fontWeight: '200' }}>Loading...</Text>
+            </View>
+        );
+    }
+
     return (
         <RadialMenuProvider
             onCitiesPress={handleCitiesPress}
             onFocusPress={handleFocusPress}
-            hideTrigger={isDrawerOpen || viewMode === 'focus' || viewMode === 'cities' || viewMode === 'home-cities'}
+            onRadarPress={handleRadarPress}
+            onSettingsPress={handleSettingsPress}
+            hideTrigger={isDrawerOpen || isSettingsOpen || viewMode === 'focus' || viewMode === 'cities' || viewMode === 'home-cities' || viewMode === 'radar'}
         >
             {viewMode === 'focus' ? (
                 <FocusWeatherPage
@@ -761,6 +1400,7 @@ function WeatherApp() {
                     setActiveCityIndex={setActiveCityIndex}
                     onBack={handleBackToFocus}
                     onAddCity={handleAddCity}
+                    onRemoveCity={handleRemoveCity}
                 />
             ) : viewMode === 'home-cities' ? (
                 <HomeCitiesPage
@@ -769,6 +1409,14 @@ function WeatherApp() {
                     setActiveCityIndex={setActiveCityIndex}
                     onBack={handleHomePress}
                     onAddCity={handleAddCity}
+                    onRemoveCity={handleRemoveCity}
+                />
+            ) : viewMode === 'radar' ? (
+                <RadarScreen
+                    lat={cities[activeCityIndex]?.lat || 33.5731}
+                    lon={cities[activeCityIndex]?.lon || -7.5898}
+                    cityName={cities[activeCityIndex]?.name || 'Weather'}
+                    onClose={handleHomePress}
                 />
             ) : (
                 <WeatherAppContent
@@ -787,8 +1435,39 @@ function WeatherApp() {
                     openDrawer={openDrawer}
                     goToPrevCity={goToPrevCity}
                     goToNextCity={goToNextCity}
+                    preferences={preferences}
+                    onUpdatePreference={updatePreference}
                 />
             )}
+
+            {/* Settings Page (overlay) */}
+            <SettingsPage
+                visible={isSettingsOpen}
+                onClose={() => setIsSettingsOpen(false)}
+                notificationPrefs={notificationPrefs}
+                onNotificationChange={handleNotificationChange}
+                cities={cities}
+                selectedCityIndex={notificationCityIndex}
+                onCityChange={async (index) => {
+                    setNotificationCityIndex(index);
+                    const selectedCity = cities[index];
+                    await saveLastActiveCity(selectedCity);
+                    // Reschedule notification with new city
+                    if (notificationPrefs.enabled) {
+                        await updateNotificationSettings(
+                            notificationPrefs.enabled,
+                            notificationPrefs.hour,
+                            notificationPrefs.minute,
+                            selectedCity
+                        );
+                    }
+                }}
+                onTestNotification={async () => {
+                    // Use selected notification city
+                    const testCity = cities[notificationCityIndex] || cities[0];
+                    await sendTestNotification(testCity);
+                }}
+            />
         </RadialMenuProvider>
     );
 }
@@ -808,14 +1487,24 @@ function WeatherAppContent({
     openDrawer,
     goToPrevCity,
     goToNextCity,
+    preferences,
+    onUpdatePreference,
 }) {
     // Ensure video plays when this view is mounted (e.g. returning from Focus mode)
     useEffect(() => {
         if (videoPlayer) {
             // Small delay to ensure the native VideoView is fully attached before playing
             const timer = setTimeout(() => {
-                videoPlayer.play();
-            }, 100);
+                try {
+                    // Guard against calling play on released player
+                    if (videoPlayer && typeof videoPlayer.play === 'function') {
+                        videoPlayer.play();
+                    }
+                } catch (error) {
+                    // Silently ignore - player may have been released during transition
+                    console.log('[WeatherAppContent] Video play skipped (player may be released)');
+                }
+            }, 200);
             return () => clearTimeout(timer);
         }
     }, [videoPlayer]);
@@ -859,7 +1548,16 @@ function WeatherAppContent({
             )}
 
             {isDrawerOpen && (
-                <GlassDrawer cities={cities} activeCityIndex={activeCityIndex} onSelectCity={handleSelectCity} onAddCity={handleAddCity} onRemoveCity={handleRemoveCity} onClose={() => setIsDrawerOpen(false)} />
+                <GlassDrawer
+                    cities={cities}
+                    activeCityIndex={activeCityIndex}
+                    onSelectCity={handleSelectCity}
+                    onAddCity={handleAddCity}
+                    onRemoveCity={handleRemoveCity}
+                    onClose={() => setIsDrawerOpen(false)}
+                    preferences={preferences}
+                    onUpdatePreference={onUpdatePreference}
+                />
             )}
         </View>
     );

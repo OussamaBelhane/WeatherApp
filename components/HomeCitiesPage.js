@@ -1,28 +1,74 @@
-import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Dimensions, Platform } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput, Dimensions, Platform, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { ChevronLeft, Search, Plus, MapPin, Sun, Cloud, CloudRain, Wind } from 'lucide-react-native';
+import { searchCity } from '../services/WeatherService';
 
 const { width, height } = Dimensions.get('window');
 
-const HomeCitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, onAddCity }) => {
+const HomeCitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, onAddCity, onRemoveCity }) => {
     const [searchQuery, setSearchQuery] = useState('');
+    const [searchResults, setSearchResults] = useState([]);
+    const [isSearching, setIsSearching] = useState(false);
+    const searchTimeout = useRef(null);
 
     // Helper to get icon based on condition
     const getWeatherIcon = (condition, size = 24, color = 'white') => {
-        const cond = condition?.toLowerCase() || '';
-        if (cond.includes('rain')) return <CloudRain size={size} color={color} />;
-        if (cond.includes('cloud')) return <Cloud size={size} color={color} />;
+        const cond = condition?.toLowerCase() || 'sunny';
+        if (cond.includes('rain') || cond.includes('storm')) return <CloudRain size={size} color={color} />;
+        if (cond.includes('cloud') || cond.includes('fog')) return <Cloud size={size} color={color} />;
         return <Sun size={size} color={color} />;
     };
 
-    // Filter cities
+    // Debounced city search
+    useEffect(() => {
+        if (searchQuery.length < 2) {
+            setSearchResults([]);
+            setIsSearching(false);
+            return;
+        }
+
+        // Clear previous timeout
+        if (searchTimeout.current) {
+            clearTimeout(searchTimeout.current);
+        }
+
+        setIsSearching(true);
+
+        // Debounce search (300ms)
+        searchTimeout.current = setTimeout(async () => {
+            try {
+                const results = await searchCity(searchQuery);
+                setSearchResults(results);
+            } catch (error) {
+                console.error('Search error:', error);
+                setSearchResults([]);
+            } finally {
+                setIsSearching(false);
+            }
+        }, 300);
+
+        return () => {
+            if (searchTimeout.current) {
+                clearTimeout(searchTimeout.current);
+            }
+        };
+    }, [searchQuery]);
+
+    // Filter existing cities (for when not actively searching)
     const filteredCities = cities.map((city, index) => ({ ...city, originalIndex: index }))
         .filter(city => city.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+    const handleAddCityFromSearch = (city) => {
+        // Pass full city object with lat/lon
+        onAddCity(city);
+        setSearchQuery('');
+        setSearchResults([]);
+    };
 
     const handleAddCityPress = () => {
         if (searchQuery.trim()) {
@@ -30,6 +76,10 @@ const HomeCitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, o
             setSearchQuery('');
         }
     };
+
+    // Determine what to show
+    const showSearchResults = searchQuery.length >= 2 && searchResults.length > 0;
+
 
     return (
         <View style={styles.container}>
@@ -75,109 +125,139 @@ const HomeCitiesPage = ({ cities, activeCityIndex, setActiveCityIndex, onBack, o
                     contentContainerStyle={styles.scrollContent}
                     showsVerticalScrollIndicator={false}
                 >
-                    {/* Cities Grid */}
-                    <View style={styles.gridContainer}>
-                        {filteredCities.map((city, index) => {
-                            const isHero = index === 0;
-                            return (
-                                <View
-                                    key={city.originalIndex}
-                                    style={[
-                                        styles.gridItem,
-                                        isHero ? styles.heroItem : styles.standardItem
+                    {/* Search Results from API */}
+                    {showSearchResults && (
+                        <View style={styles.searchResultsContainer}>
+                            <Text style={styles.sectionTitle}>Search Results</Text>
+                            {searchResults.map((city, index) => (
+                                <Pressable
+                                    key={city.id || index}
+                                    style={({ pressed }) => [
+                                        styles.searchResultItem,
+                                        pressed && styles.searchResultItemPressed
                                     ]}
+                                    onPress={() => handleAddCityFromSearch(city)}
                                 >
-                                    <Pressable
-                                        style={styles.cardContainer}
-                                        onPress={() => {
-                                            setActiveCityIndex(city.originalIndex);
-                                            onBack();
-                                        }}
-                                    >
-                                        {Platform.OS === 'android' ? (
-                                            <LinearGradient
-                                                // Royal Blue: Vibrant, premium blue that fits the weather theme. Not black.
-                                                colors={['#1e3c72', '#2a5298']}
-                                                style={[styles.androidCardGradient, { borderWidth: 0 }]}
-                                            >
-                                                <View style={styles.cardContent}>
-                                                    <View style={styles.cardTop}>
-                                                        <View>
-                                                            <Text style={styles.cardCity}>{city.name}</Text>
-                                                            <Text style={styles.cardTime}>10:45 PM</Text>
-                                                        </View>
-                                                        {getWeatherIcon(city.condition, isHero ? 40 : 32, 'white')}
-                                                    </View>
-
-                                                    <View style={styles.cardBottom}>
-                                                        <Text style={styles.cardCondition}>{city.condition || 'Sunny'}</Text>
-                                                        <Text style={[styles.cardTemp, !isHero && styles.smallTemp]}>{city.temp}°</Text>
-                                                    </View>
-                                                </View>
-                                            </LinearGradient>
-                                        ) : (
-                                            <>
-                                                <BlurView
-                                                    intensity={30}
-                                                    tint="dark"
-                                                    style={StyleSheet.absoluteFill}
-                                                />
-                                                <LinearGradient
-                                                    colors={['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.05)']}
-                                                    style={StyleSheet.absoluteFill}
-                                                />
-                                                <View style={styles.cardContent}>
-                                                    <View style={styles.cardTop}>
-                                                        <View>
-                                                            <Text style={styles.cardCity}>{city.name}</Text>
-                                                            <Text style={styles.cardTime}>10:45 PM</Text>
-                                                        </View>
-                                                        {getWeatherIcon(city.condition, isHero ? 40 : 32, 'white')}
-                                                    </View>
-
-                                                    <View style={styles.cardBottom}>
-                                                        <Text style={styles.cardCondition}>{city.condition || 'Sunny'}</Text>
-                                                        <Text style={[styles.cardTemp, !isHero && styles.smallTemp]}>{city.temp}°</Text>
-                                                    </View>
-                                                </View>
-                                            </>
-                                        )}
-                                    </Pressable>
-                                </View>
-                            );
-                        })}
-
-                        {/* Add City Button - Fits in grid */}
-                        {searchQuery.trim() !== '' && (
-                            <View style={[styles.gridItem, styles.standardItem]}>
-                                <Pressable style={styles.cardContainer} onPress={handleAddCityPress}>
-                                    {Platform.OS === 'android' ? (
-                                        <LinearGradient
-                                            colors={['#1e3c72', '#2a5298']}
-                                            style={[styles.androidCardGradient, { borderWidth: 0 }]}
-                                        >
-                                            <View style={styles.addCityContent}>
-                                                <Plus size={32} color="white" />
-                                                <Text style={styles.addCityText}>Add</Text>
-                                            </View>
-                                        </LinearGradient>
-                                    ) : (
-                                        <>
-                                            <BlurView
-                                                intensity={20}
-                                                tint="light"
-                                                style={StyleSheet.absoluteFill}
-                                            />
-                                            <View style={styles.addCityContent}>
-                                                <Plus size={32} color="white" />
-                                                <Text style={styles.addCityText}>Add</Text>
-                                            </View>
-                                        </>
-                                    )}
+                                    <View style={styles.searchResultInfo}>
+                                        <MapPin size={18} color="rgba(255,255,255,0.6)" />
+                                        <View style={styles.searchResultText}>
+                                            <Text style={styles.searchResultName}>{city.name}</Text>
+                                            <Text style={styles.searchResultCountry}>{city.displayName || city.country}</Text>
+                                        </View>
+                                    </View>
+                                    <Plus size={24} color="white" />
                                 </Pressable>
+                            ))}
+                        </View>
+                    )}
+
+                    {/* Loading indicator */}
+                    {isSearching && (
+                        <View style={styles.loadingContainer}>
+                            <Text style={styles.loadingText}>Searching...</Text>
+                        </View>
+                    )}
+
+                    {/* No results message */}
+                    {searchQuery.length >= 2 && !isSearching && searchResults.length === 0 && (
+                        <View style={styles.noResultsContainer}>
+                            <Text style={styles.noResultsText}>No cities found for "{searchQuery}"</Text>
+                        </View>
+                    )}
+
+                    {/* Existing Cities Grid - show when not actively searching */}
+                    {!showSearchResults && (
+                        <>
+                            {searchQuery.length < 2 && (
+                                <Text style={styles.sectionTitle}>Your Cities</Text>
+                            )}
+                            <View style={styles.gridContainer}>
+                                {filteredCities.map((city, index) => {
+                                    const isHero = index === 0;
+                                    return (
+                                        <View
+                                            key={city.originalIndex}
+                                            style={[
+                                                styles.gridItem,
+                                                isHero ? styles.heroItem : styles.standardItem
+                                            ]}
+                                        >
+                                            <Pressable
+                                                style={styles.cardContainer}
+                                                onPress={() => {
+                                                    setActiveCityIndex(city.originalIndex);
+                                                    onBack();
+                                                }}
+                                                onLongPress={() => {
+                                                    if (Platform.OS === 'web') {
+                                                        onRemoveCity(city.originalIndex);
+                                                        return;
+                                                    }
+                                                    Alert.alert(
+                                                        "Delete City",
+                                                        `Are you sure you want to remove ${city.name}?`,
+                                                        [
+                                                            { text: "Cancel", style: "cancel" },
+                                                            { text: "Delete", onPress: () => onRemoveCity(city.originalIndex), style: "destructive" }
+                                                        ]
+                                                    );
+                                                }}
+                                            >
+                                                {Platform.OS === 'android' ? (
+                                                    <LinearGradient
+                                                        // Royal Blue: Vibrant, premium blue that fits the weather theme. Not black.
+                                                        colors={['#1e3c72', '#2a5298']}
+                                                        style={[styles.androidCardGradient, { borderWidth: 0 }]}
+                                                    >
+                                                        <View style={styles.cardContent}>
+                                                            <View style={styles.cardTop}>
+                                                                <View>
+                                                                    <Text style={styles.cardCity}>{city.name}</Text>
+                                                                    <Text style={styles.cardTime}>10:45 PM</Text>
+                                                                </View>
+                                                                {getWeatherIcon(city.condition, isHero ? 40 : 32, 'white')}
+                                                            </View>
+
+                                                            <View style={styles.cardBottom}>
+                                                                <Text style={styles.cardCondition}>{city.condition || 'Sunny'}</Text>
+                                                                <Text style={[styles.cardTemp, !isHero && styles.smallTemp]}>{city.temp}°</Text>
+                                                            </View>
+                                                        </View>
+                                                    </LinearGradient>
+                                                ) : (
+                                                    <>
+                                                        <BlurView
+                                                            intensity={30}
+                                                            tint="dark"
+                                                            style={StyleSheet.absoluteFill}
+                                                        />
+                                                        <LinearGradient
+                                                            colors={['rgba(255,255,255,0.1)', 'rgba(255,255,255,0.05)']}
+                                                            style={StyleSheet.absoluteFill}
+                                                        />
+                                                        <View style={styles.cardContent}>
+                                                            <View style={styles.cardTop}>
+                                                                <View>
+                                                                    <Text style={styles.cardCity}>{city.name}</Text>
+                                                                    <Text style={styles.cardTime}>10:45 PM</Text>
+                                                                </View>
+                                                                {getWeatherIcon(city.condition, isHero ? 40 : 32, 'white')}
+                                                            </View>
+
+                                                            <View style={styles.cardBottom}>
+                                                                <Text style={styles.cardCondition}>{city.condition || 'Sunny'}</Text>
+                                                                <Text style={[styles.cardTemp, !isHero && styles.smallTemp]}>{city.temp || 0}°</Text>
+                                                            </View>
+                                                        </View>
+                                                    </>
+                                                )}
+                                            </Pressable>
+                                        </View>
+                                    );
+                                })}
                             </View>
-                        )}
-                    </View>
+                        </>
+                    )}
                 </ScrollView>
             </SafeAreaView>
         </View>
@@ -343,6 +423,68 @@ const styles = StyleSheet.create({
         borderRadius: 30,
         flex: 1,
         overflow: 'hidden',
+    },
+    // New search-related styles
+    sectionTitle: {
+        fontSize: 14,
+        fontWeight: '600',
+        color: 'rgba(255,255,255,0.6)',
+        textTransform: 'uppercase',
+        letterSpacing: 1,
+        marginBottom: 16,
+    },
+    searchResultsContainer: {
+        marginBottom: 24,
+    },
+    searchResultItem: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        backgroundColor: 'rgba(255,255,255,0.1)',
+        borderRadius: 16,
+        padding: 16,
+        marginBottom: 10,
+        borderWidth: 1,
+        borderColor: 'rgba(255,255,255,0.1)',
+    },
+    searchResultItemPressed: {
+        backgroundColor: 'rgba(255,255,255,0.2)',
+    },
+    searchResultInfo: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        flex: 1,
+        gap: 12,
+    },
+    searchResultText: {
+        flex: 1,
+    },
+    searchResultName: {
+        fontSize: 18,
+        fontWeight: '600',
+        color: 'white',
+    },
+    searchResultCountry: {
+        fontSize: 14,
+        color: 'rgba(255,255,255,0.6)',
+        marginTop: 2,
+    },
+    loadingContainer: {
+        padding: 20,
+        alignItems: 'center',
+    },
+    loadingText: {
+        color: 'rgba(255,255,255,0.6)',
+        fontSize: 16,
+    },
+    noResultsContainer: {
+        padding: 40,
+        alignItems: 'center',
+    },
+    noResultsText: {
+        color: 'rgba(255,255,255,0.5)',
+        fontSize: 16,
+        textAlign: 'center',
     },
 });
 

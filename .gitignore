@@ -36,6 +36,13 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+
 # generated native folders
 /ios
 /android
+
+# Ignored custom files
+diagrams/
+*.drawio
+videos/
+debug_copy.py

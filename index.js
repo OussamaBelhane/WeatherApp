@@ -1,5 +1,12 @@
 import 'react-native-gesture-handler';
 import { registerRootComponent } from 'expo';
+import { LogBox } from 'react-native';
+
+// Suppress known warnings in Expo Go
+LogBox.ignoreLogs([
+    'expo-notifications',
+    'SafeAreaView has been deprecated',
+]);
 
 import App from './App';
 

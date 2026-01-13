@@ -21,13 +21,18 @@
         "backgroundColor": "#ffffff"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.anonymous.WeatherApp"
+      "package": "com.invictus.weatherapp"
     },
     "web": {
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
       "expo-video"
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "3e642ebe-48f2-4236-99b7-36971e162a2c"
+      }
+    }
   }
 }

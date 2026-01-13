@@ -66,6 +66,54 @@ const FocusWeatherPage = ({ cities, activeCityIndex, setActiveCityIndex, onHome,
                             </View>
                         </View>
 
+                        {/* 7-Day Forecast */}
+                        <View style={styles.forecastCard}>
+                            <Text style={styles.sectionTitle}>7-Day Forecast</Text>
+                            {activeCity?.daily?.map((day, index) => (
+                                <View key={index} style={styles.forecastRow}>
+                                    <Text style={styles.forecastDay}>{day.day.slice(0, 3)}</Text>
+                                    <View style={styles.forecastIcon}>
+                                        {getWeatherIcon(day.condition, 20, 'black')}
+                                    </View>
+
+                                    {/* Precipitation Badge */}
+                                    <View style={{
+                                        backgroundColor: 'rgba(96, 165, 250, 0.15)',
+                                        borderRadius: 8,
+                                        paddingHorizontal: 6,
+                                        paddingVertical: 2,
+                                        width: 54, // Fixed width for alignment
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        justifyContent: 'center',
+                                        borderWidth: 1,
+                                        borderColor: 'rgba(96, 165, 250, 0.3)',
+                                        marginRight: 8
+                                    }}>
+                                        <Droplets size={10} color="rgba(96, 165, 250, 1)" />
+                                        <Text style={{ color: 'rgba(96, 165, 250, 1)', fontSize: 10, marginLeft: 2, fontWeight: '700' }}>{day.precipitation || 0}%</Text>
+                                    </View>
+
+                                    <Text style={styles.forecastTempLow}>{day.low}°</Text>
+
+                                    {/* Range Bar */}
+                                    <View style={styles.rangeBarContainer}>
+                                        <View style={[styles.rangeBarBackground, { backgroundColor: '#E5E5E5' }]} />
+                                        <View style={[
+                                            styles.rangeBarFill,
+                                            {
+                                                backgroundColor: 'black',
+                                                left: `${((day.low - (day.globalLow || day.low - 5) - 0) / ((day.globalHigh || day.high + 5) - (day.globalLow || day.low - 5))) * 100}%`,
+                                                width: `${((day.high - day.low) / ((day.globalHigh || day.high + 5) - (day.globalLow || day.low - 5))) * 100}%`
+                                            }
+                                        ]} />
+                                    </View>
+
+                                    <Text style={styles.forecastTempHigh}>{day.high}°</Text>
+                                </View>
+                            ))}
+                        </View>
+
                         {/* Stats Grid */}
                         <View style={styles.statsGrid}>
                             <View style={styles.statBox}>
@@ -381,6 +429,69 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: '400',
         color: '#999',
+    },
+    // Forecast Styles
+    forecastCard: {
+        backgroundColor: 'white',
+        borderRadius: 30,
+        padding: 24,
+        marginBottom: 20,
+    },
+    sectionTitle: {
+        fontSize: 18,
+        fontWeight: '700',
+        color: 'black',
+        marginBottom: 16,
+    },
+    forecastRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingVertical: 12,
+        borderBottomWidth: 1,
+        borderBottomColor: '#f0f0f0',
+    },
+    forecastDay: {
+        width: 40,
+        fontSize: 14,
+        fontWeight: '600',
+        color: '#666',
+    },
+    forecastIcon: {
+        width: 30,
+        alignItems: 'center',
+        marginRight: 8,
+    },
+    forecastTempLow: {
+        width: 30,
+        fontSize: 14,
+        color: '#999',
+        textAlign: 'right',
+        marginRight: 8,
+    },
+    forecastTempHigh: {
+        width: 30,
+        fontSize: 14,
+        fontWeight: '600',
+        color: 'black',
+        textAlign: 'right',
+        marginLeft: 8,
+    },
+    rangeBarContainer: {
+        flex: 1,
+        height: 4,
+        backgroundColor: '#E5E5E5',
+        borderRadius: 2,
+        overflow: 'hidden',
+        position: 'relative',
+    },
+    rangeBarBackground: {
+        ...StyleSheet.absoluteFillObject,
+        borderRadius: 2,
+    },
+    rangeBarFill: {
+        height: '100%',
+        borderRadius: 2,
+        position: 'absolute',
     },
 });
 
